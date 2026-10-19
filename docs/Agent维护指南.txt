@@ -1,0 +1,86 @@
+11.给后续维护者与玩家 Agent 的适配指导报告
+
+11. Adaptation Guide for Future Maintainers and Players' Agents
+
+本节可直接交给协助排查的 agent。目标是在新版本或新环境中重新验证问题、定位等价热点，并在证据充分时制作受版本约束的修复；不是让 agent 绕过校验，把旧地址硬套到新版本。只在玩家有权使用并已授权分析的本地游戏副本上操作，先保留原始文件和回退入口。
+
+Players can give this section directly to an agent assisting with troubleshooting. The goal is to revalidate the issue, locate an equivalent hotspot in a new build or environment, and produce a build-specific fix when the evidence supports it. Do not bypass validation or force an old address onto a new build. Work only on a local game copy the player is entitled to use and has authorized for analysis, preserving original files and a rollback path.
+
+11.1 先判断是“加载失败”“版本不支持”还是“原来的问题已经变了”
+先备份 HeatCGFix.log，记录游戏来源、EXE 文件大小、文件版本、SHA256、系统、CPU、显卡及驱动。不要把“日志没有 APPLIED”直接当成需要改代码。无日志时先检查 DLL 是否被加载、日志目录是否可写、是否有同名代理冲突；UNSUPPORTED 也可能是文件读取失败，并不总是版本更新；TIMEOUT 表示旧版预期指令未出现，应分析初始化时机或新代码位置。如果日志显示 APPLIED 但仍卡顿，则应重新采样，不能假设旧根因仍然成立。
+
+11.1 First distinguish loading failure, unsupported build, and a changed underlying issue
+Back up HeatCGFix.log and record distribution, executable size, file version, SHA256, OS, CPU, GPU, and driver. Missing APPLIED does not by itself justify changing code. With no log, check module loading, log-directory permissions, and conflicting proxies. UNSUPPORTED can also reflect an executable read failure, not necessarily an update. TIMEOUT means the expected old instruction was not observed; investigate initialization timing or relocated code. If APPLIED appears but stuttering remains, profile again rather than assuming the original cause still applies.
+
+可在 EXE 所在目录执行以下只读 PowerShell 命令记录身份：
+Get-FileHash -LiteralPath '.\NeedForSpeedHeat.exe' -Algorithm SHA256
+(Get-Item -LiteralPath '.\NeedForSpeedHeat.exe').VersionInfo | Format-List FileVersion,ProductVersion
+Get-Item -LiteralPath '.\NeedForSpeedHeat.exe' | Select-Object Name,Length
+
+From the executable folder, these read-only PowerShell commands record its identity:
+Get-FileHash -LiteralPath '.\NeedForSpeedHeat.exe' -Algorithm SHA256
+(Get-Item -LiteralPath '.\NeedForSpeedHeat.exe').VersionInfo | Format-List FileVersion,ProductVersion
+Get-Item -LiteralPath '.\NeedForSpeedHeat.exe' | Select-Object Name,Length
+
+11.2 建立干净、可复现的对照
+退出游戏，临时移走本补丁，必要时恢复被替换的其他 DLL；通过普通 Steam 入口启动。分别记录一段明确卡顿的过场动画，以及一段流畅的实时菜单或驾驶。尽量保持分辨率、帧率限制、后台程序和采集长度一致。不要重复本次已失败的效率模式或粗暴缩减 CPU 亲和性方案；它们曾导致地图加载卡死或黑屏。对新玩家也不要把这些旧失败结果当成普遍定律。
+
+11.2 Establish a clean, reproducible baseline
+Exit the game, temporarily remove this fix, and restore any other DLL it replaced if necessary. Launch normally through Steam. Record a clearly stuttering cutscene and a smooth real-time menu or driving segment, keeping resolution, frame cap, background applications, and capture duration as comparable as possible. Do not repeat the Efficiency Mode or aggressive CPU-affinity restriction experiments used here: they previously caused map-loading freezes or black screens. Those local failures should not be presented as universal findings for all players.
+
+11.3 用运行证据定位，不凭总占用率猜测
+优先做短时 CPU 采样和线程调用栈对比。此次使用 Windows Performance Recorder 的 CPU 配置，每种场景约 30 秒，再用 PerfView/TraceEvent 分析；也可用 WPA 或其他能提供等价证据的工具。启动前检查是否已有录制会话，不要取消无关采集。采集可能需要 Windows 提权，由玩家确认系统 UAC。下面命令需逐条执行，在 start 与 stop 之间维持对应场景约 10～30 秒；把输出路径替换成实际可写目录：
+wpr -start CPU -instancename HeatCGDiag
+wpr -stop C:\YourWritableFolder\cg-cpu.etl -instancename HeatCGDiag -skipPdbGen
+对流畅场景重新 start，并 stop 到另一个 menu-cpu.etl 文件。结束后确认自己的录制会话已经停止。
+
+11.3 Use runtime evidence rather than overall utilization
+Prefer short CPU profiles and per-thread call-stack comparisons. We used Windows Performance Recorder's CPU profile for roughly 30 seconds per scenario, then analyzed it with PerfView/TraceEvent. WPA or equivalent tools are also suitable. Check for existing recording sessions first and do not cancel unrelated captures. Recording may require Windows elevation, with the player confirming UAC. Run the following commands separately, keep the relevant scene active for roughly 10–30 seconds between start and stop, and substitute an actual writable output directory:
+wpr -start CPU -instancename HeatCGDiag
+wpr -stop C:\YourWritableFolder\cg-cpu.etl -instancename HeatCGDiag -skipPdbGen
+Start a separate capture for the smooth scenario and stop it to another file, such as menu-cpu.etl. Confirm that your own recording session has stopped when finished.
+
+分析时按这次游戏进程的 PID 和启动时间过滤，比较热点地址、调用栈、线程和样本比例，记录丢失事件情况。采样 IP 可能偏移到昂贵指令之后，不能把采样数量直接等同于精确耗时。ETL 和内存数据可能较大且含环境信息，无需把整份追踪、内存转储或游戏二进制上传到公开仓库；尽量分享最小必要的统计与反汇编证据。
+
+Filter by the current game process's PID and start time. Compare hotspot addresses, stacks, threads, and sample proportions, and record lost events. Sampled IPs may fall after expensive instructions; sample counts are not exact elapsed-time measurements. ETL and memory captures can be large and contain environment information. Do not require full traces, dumps, or game binaries in the public repository; share the minimum necessary statistics and disassembly evidence instead.
+
+11.4 旧版本定位线索，仅供重新分析参考
+旧 EXE 的 SHA256 见第 4 部分。旧例程 RVA 范围约为 0x0e6d7470～0x0e6d74ed；候选 XCHG 的 RVA 为 0x0e6d749b，紧随其后的采样热点 RVA 为 0x0e6d74a2。在旧模块基址 0x140000000 下，对应地址分别为 0x14e6d749b 和 0x14e6d74a2；旧内存操作数地址为 0x150970dff，其低 6 位为 63，两字节访问因此跨越缓存行。新版本的地址、位移、寄存器、操作数宽度和调用关系都可能改变，必须重新解码计算。
+
+11.4 Old-build clues for reanalysis only
+The old executable SHA256 is in Section 4. The routine occupied approximately RVA 0x0e6d7470–0x0e6d74ed. The candidate XCHG was at RVA 0x0e6d749b, with the following sampled hotspot at RVA 0x0e6d74a2. At the old module base 0x140000000, these were VA 0x14e6d749b and 0x14e6d74a2. The old memory operand was at 0x150970dff; its low six bits were 63, so the two-byte access crossed a cache-line boundary. Addresses, displacements, registers, operand widths, and call relationships may all change in another build and must be decoded again.
+
+11.5 在初始化后的真实代码中确认等价例程
+该游戏的磁盘 EXE 与运行时展开后的代码并不完全相同。静态字节搜索失败不代表没有候选；也不能把受保护区的磁盘反汇编直接当成实际执行代码。需要时在初始化后只读获取相关运行代码页，结合调用栈，用支持 x86-64 的反汇编器核实指令边界、控制流和 RIP 相对寻址。旧例程可见范围缩放、refill 调用、归一化表和状态写回等位解码结构，可与 libvpx 的布尔位读取器作结构比较，但不能仅凭相似就宣称确认了编解码器。
+
+11.5 Confirm the equivalent routine in actual initialized code
+The on-disk executable differs from the unpacked runtime code. A failed static byte search does not rule out a candidate, and protected on-disk disassembly must not be presented as executed code. When needed, read only relevant initialized code pages and use call stacks plus an x86-64 disassembler to confirm instruction boundaries, control flow, and RIP-relative addressing. The old routine included range scaling, a refill call, a normalization table, and state writeback. Structural comparison with a libvpx boolean bitreader can help, but resemblance alone does not establish codec identity.
+
+11.6 修改前必须重新证明的条件
+确认候选确实位于新版本的异常热点路径；按运行时地址和实际访问宽度计算是否跨缓存行；沿所有相关控制流证明交换读回值在使用前被覆盖；保留原本的内存写入，检查标志位、寄存器活跃性和异常路径，并尽可能分析共享目标的其他引用及并发用途。旧版选择 MOV [mem], AX，不是 MOV AX, [mem]，后者会丢掉写入。不要删掉整个交换，也不要批量替换所有 87 字节。即使读回值无用，原子性和内存顺序的取消仍可能影响其他线程；无法合理排除风险时，先报告证据，不要宣称安全或自动发布。
+
+11.6 Re-establish the prerequisites before changing anything
+Confirm that the candidate is on the new build's abnormal hot path. Calculate cache-line crossing from the runtime address and actual access width. Prove across relevant control-flow paths that the exchange's returned value is overwritten before use. Preserve the original memory store, check flags, register liveness, and exceptional paths, and investigate other references and concurrent uses of the shared target where possible. The old change uses MOV [mem], AX, not MOV AX, [mem], which would discard the store. Do not remove the whole exchange or mass-replace bytes equal to 87. An unused returned value does not make the loss of atomicity and ordering universally safe. If the risk cannot be reasonably assessed, report the evidence rather than declaring safety or automatically releasing a patch.
+
+11.7 先做最小内存实验，再做新版本 DLL
+有充分依据后，先在受控的单人测试中做一次可回退的最小运行时修改，记录原字节、预期字节、实际修改字节、PID、进程启动时间和模块基址。变更进程内存前，重新确认进程与 EXE 身份及完整指令；写后刷新指令缓存、读回确认并恢复原页面权限，失败时尝试回退并明确报告结果。旧例程的一字节方案不保证适用于新指令编码。先让玩家观察同段动画，再测试地图、驾驶、输入和稳定性；只有看到改善且无已知异常，再把新 EXE 的 SHA256、RVA、原指令和替换指令作为独立的版本条目加入源码。不要仅替换哈希、删除校验或扩大接受范围来“兼容更新”。
+
+11.7 Test a minimal memory change before producing a new DLL
+With sufficient evidence, first perform a reversible, minimal runtime experiment in a controlled single-player test. Record original, expected, and changed bytes, PID, process start time, and module base. Reconfirm process and executable identity plus the complete instruction immediately before writing. Flush the instruction cache, verify by readback, and restore page protection afterward; on failure, attempt rollback and explicitly report the result. The old one-byte approach may not suit a new instruction encoding. Have the player compare the same cutscene, then test map loading, driving, input, and stability. Only after improvement without known regressions should the new executable SHA256, RVA, original instruction, and replacement instruction be added as a separate supported-build entry. Do not obtain compatibility merely by replacing the hash, removing checks, or broadening acceptance.
+
+11.8 从源码构建并验证加载链
+阅读 source/heat_cg_fix.c、source/dinput8.def 和 source/proxy_smoke_test.c，使用 Zig 0.15.2 执行构建：
+pwsh -File source/build.ps1 -Zig C:/path/to/zig.exe
+输出为 release/dinput8.dll 和测试程序。先验证六个名称/序号导出、系统目录原 DLL 的绝对路径转发、DirectInput 创建释放、不支持版本拒绝修改；再只安装 DLL，通过普通 Steam 启动。确认游戏目录的代理 DLL 和系统原 DLL 均已加载、日志成功、目标字节经独立读回正确，并做退出重启后自动生效和移除 DLL 后恢复原状的检查。DLL 入口只做最小初始化，耗时工作留给后台线程；避免在加载器锁中等待线程或执行复杂操作。
+
+11.8 Build from source and validate the loading path
+Review source/heat_cg_fix.c, source/dinput8.def, and source/proxy_smoke_test.c, then build with Zig 0.15.2:
+pwsh -File source/build.ps1 -Zig C:/path/to/zig.exe
+Outputs include release/dinput8.dll and the test executable. Verify all six named/ordinal exports, forwarding to the original DLL by its absolute system-directory path, DirectInput creation/release, and unsupported-build refusal. Then install only the DLL and launch normally through Steam. Confirm that both the game-folder proxy and system DLL are loaded, that the log reports success, and that an independent memory read matches the replacement. Also check automatic activation after restarting and restoration of original behavior after removing the DLL. Keep DLL entry-point initialization minimal, perform expensive work on the background thread, and avoid waiting for threads or complex operations under the loader lock.
+
+11.9 给玩家与维护者交付可审核的结果
+提交新 EXE 身份、复现步骤、补丁前后采样统计、候选例程反汇编、修改语义及并发风险判断、源码差异、新 DLL SHA256、实玩结果和回退方法；明确区分已验证与未验证内容。更新版本号、支持列表、验证记录和发布校验清单。如果没有找到同类热点，或修改没有改善，就回退并继续排查其他原因，不能把所有 CG 卡顿归咎于本报告中的操作。不要修改授权检查来解决性能问题，也不要分发游戏 EXE、资源或含个人信息的完整采集数据。
+
+11.9 Deliver reviewable results
+Provide the new executable identity, reproduction steps, before/after profiling statistics, candidate disassembly, semantic and concurrency-risk assessment, source diff, new DLL SHA256, gameplay results, and rollback instructions. Distinguish verified findings from untested assumptions. Update the release version, supported-build list, validation record, and checksums. If no equivalent hotspot is found or the change does not help, roll back and investigate other causes; do not attribute every cutscene issue to this operation. Do not change license/authentication checks as a performance fix or distribute game executables, assets, or full captures containing personal information.
+
